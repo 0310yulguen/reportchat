@@ -29,7 +29,7 @@
         .user-name { font-weight: bold; font-size: 14px; color: var(--text-black); margin-bottom: 4px; }
         .user-preview { font-size: 12px; color: var(--text-gray); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-        /* 오른쪽 채팅 화면 패널 (카톡 스타일 색상) */
+        /* 오른쪽 채팅 화면 패널 */
         .chat-room-panel { flex: 1; display: flex; flex-direction: column; background-color: #B2C7E7; position: relative; }
         .room-header { padding: 20px; background-color: white; border-bottom: 1px solid #E5E8EB; font-weight: bold; font-size: 16px; display: flex; align-items: center; }
         
@@ -66,7 +66,7 @@
         <div id="roomEmpty" class="empty-state">왼쪽에서 대화방을 선택해주세요.</div>
         
         <div id="roomActive" style="display: none; height: 100%; flex-direction: column;">
-            <div class="room-header" id="roomTitle">사용자 닉네임</div>
+            <div class="room-header" id="roomTitle">사용자 이름</div>
             <div class="room-messages" id="roomMessages">
                 <!-- 메시지 렌더링 -->
             </div>
@@ -87,20 +87,25 @@
     firebase.initializeApp(firebaseConfig);
     const database = firebase.database();
 
-    let usersData = {}; // 닉네임 정보 캐싱용
+    let usersData = {}; // 이름/반/번호 캐싱
     let currentChatUid = null;
     let currentListener = null;
 
-    // 1. 유저 데이터(닉네임) 감지
+    // 유저 데이터 감지
     database.ref('user_data').on('value', snap => {
-        const data = snap.val();
+        const data = snap.val() || {};
         for(let uid in data) {
-            usersData[uid] = data[uid].nickname || "이름없음";
+            const u = data[uid];
+            if(u.name && u.classNum && u.studentNum) {
+                usersData[uid] = `${u.classNum}반 ${u.studentNum}번 ${u.name}`;
+            } else {
+                usersData[uid] = "정보 없는 사용자";
+            }
         }
         renderUserList();
     });
 
-    // 2. 전체 문의방 목록 감지
+    // 전체 문의방 감지
     let allInquiries = {};
     database.ref('inquiries').on('value', snap => {
         allInquiries = snap.val() || {};
@@ -114,28 +119,28 @@
         for(let uid in allInquiries) {
             const msgsObj = allInquiries[uid];
             const msgsArr = Object.values(msgsObj);
-            const lastMsg = msgsArr[msgsArr.length - 1]; // 최근 메시지 추출
-            const nickname = usersData[uid] || "알 수 없는 사용자";
+            const lastMsg = msgsArr[msgsArr.length - 1]; 
+            const userInfo = usersData[uid] || "알 수 없는 사용자";
 
             const item = document.createElement('div');
             item.className = `user-item ${currentChatUid === uid ? 'active' : ''}`;
-            item.onclick = () => openChat(uid, nickname);
+            item.onclick = () => openChat(uid, userInfo);
             
             item.innerHTML = `
-                <div class="user-name">${nickname}</div>
+                <div class="user-name">${userInfo}</div>
                 <div class="user-preview">${lastMsg ? lastMsg.text : '대화 내용 없음'}</div>
             `;
             listDiv.appendChild(item);
         }
     }
 
-    function openChat(uid, nickname) {
+    function openChat(uid, userInfo) {
         currentChatUid = uid;
         renderUserList(); 
         
         document.getElementById('roomEmpty').style.display = 'none';
         document.getElementById('roomActive').style.display = 'flex';
-        document.getElementById('roomTitle').innerText = `${nickname} 님과의 대화`;
+        document.getElementById('roomTitle').innerText = `${userInfo} 님과의 대화`;
         
         const msgDiv = document.getElementById('roomMessages');
         msgDiv.innerHTML = '';
@@ -143,13 +148,12 @@
         if(currentListener) database.ref('inquiries/' + currentListener).off();
         currentListener = uid;
 
-        // 선택한 유저와의 채팅 내용 불러오기
+        // 선택한 유저와의 채팅 불러오기
         database.ref('inquiries/' + uid).on('child_added', snap => {
             const msg = snap.val();
-            // 관리자는 'admin', 학생은 'user'
             const roleClass = msg.role === 'admin' ? 'msg-admin' : 'msg-user';
             
-            msgDiv.innerHTML += `<div class="msg-bubble ${roleClass}">${msg.text.replace(/\n/g, '<br>')}</div>`;
+            msgDiv.insertAdjacentHTML('beforeend', `<div class="msg-bubble ${roleClass}">${msg.text.replace(/\n/g, '<br>')}</div>`);
             msgDiv.scrollTop = msgDiv.scrollHeight;
         });
     }
@@ -160,13 +164,12 @@
         const text = input.value.trim();
         if(!text) return;
         
-        // 데이터베이스에 내 답변 저장
+        // 데이터베이스에 저장
         database.ref('inquiries/' + currentChatUid).push({
             role: 'admin',
             text: text,
             timestamp: firebase.database.ServerValue.TIMESTAMP
         });
-        
         input.value = '';
     }
 
