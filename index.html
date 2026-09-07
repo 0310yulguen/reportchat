@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>김포고 수강신청 - 관리자 1:1 채팅</title>
+    <!-- Firebase -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+    
+    <style>
+        :root {
+            --primary-dark: #2A52BE; 
+            --primary-light: #678CEB; 
+            --bg-color: #F2F4F6;
+            --text-black: #191F28;
+            --text-gray: #8B95A1;
+        }
+
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; font-family: 'Pretendard', sans-serif; background-color: var(--bg-color); display: flex; }
+        
+        /* 왼쪽 채팅방 목록 패널 */
+        .chat-list-panel { width: 300px; background-color: white; border-right: 1px solid #E5E8EB; display: flex; flex-direction: column; }
+        .panel-header { padding: 20px; background-color: var(--primary-dark); color: white; font-weight: bold; font-size: 18px; flex-shrink: 0; }
+        .user-list { flex: 1; overflow-y: auto; }
+        
+        .user-item { padding: 16px; border-bottom: 1px solid #F2F4F6; cursor: pointer; transition: background 0.2s; }
+        .user-item:hover, .user-item.active { background-color: #E8F0FE; }
+        .user-name { font-weight: bold; font-size: 14px; color: var(--text-black); margin-bottom: 4px; }
+        .user-preview { font-size: 12px; color: var(--text-gray); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+        /* 오른쪽 채팅 화면 패널 (카톡 스타일 색상) */
+        .chat-room-panel { flex: 1; display: flex; flex-direction: column; background-color: #B2C7E7; position: relative; }
+        .room-header { padding: 20px; background-color: white; border-bottom: 1px solid #E5E8EB; font-weight: bold; font-size: 16px; display: flex; align-items: center; }
+        
+        .room-messages { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+        .msg-bubble { padding: 10px 14px; border-radius: 14px; max-width: 60%; font-size: 14px; line-height: 1.4; word-break: break-word; }
+        
+        /* 관리자(나)의 메시지 - 오른쪽 배치 및 카톡 노란색 */
+        .msg-admin { background-color: #FEE500; color: #191F28; align-self: flex-end; border-top-right-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+        
+        /* 학생(유저)의 메시지 - 왼쪽 배치 및 흰색 */
+        .msg-user { background-color: white; color: #191F28; align-self: flex-start; border-top-left-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+
+        .room-input-area { padding: 16px; background-color: white; border-top: 1px solid #E5E8EB; display: flex; gap: 10px; }
+        .room-input { flex: 1; padding: 12px 16px; border: 1px solid #D1D6DB; border-radius: 24px; outline: none; font-size: 14px; }
+        .room-send-btn { padding: 0 24px; background-color: var(--primary-dark); color: white; border: none; border-radius: 24px; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        .room-send-btn:active { background-color: var(--primary-light); }
+        
+        .empty-state { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-gray); font-size: 15px; font-weight: bold; }
+
+    </style>
+</head>
+<body>
+
+    <!-- 왼쪽 사용자 리스트 -->
+    <div class="chat-list-panel">
+        <div class="panel-header">학생 문의 채팅방</div>
+        <div class="user-list" id="userList">
+            <!-- 자바스크립트로 렌더링 -->
+        </div>
+    </div>
+
+    <!-- 오른쪽 채팅 내역 -->
+    <div class="chat-room-panel">
+        <div id="roomEmpty" class="empty-state">왼쪽에서 대화방을 선택해주세요.</div>
+        
+        <div id="roomActive" style="display: none; height: 100%; flex-direction: column;">
+            <div class="room-header" id="roomTitle">사용자 닉네임</div>
+            <div class="room-messages" id="roomMessages">
+                <!-- 메시지 렌더링 -->
+            </div>
+            <div class="room-input-area">
+                <input type="text" id="adminInput" class="room-input" placeholder="답변을 입력하세요 (엔터로 전송)">
+                <button class="room-send-btn" onclick="sendReply()">전송</button>
+            </div>
+        </div>
+    </div>
+
+<script>
+    // 🔥 메인 앱과 동일한 Firebase 정보
+    const firebaseConfig = {
+      apiKey: "AIzaSyD-IyAGGXQ69d8LupTU2mKmr87yoenahRo",
+      databaseURL: "https://gimpo-monitoring-default-rtdb.firebaseio.com",
+      projectId: "gimpo-monitoring"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const database = firebase.database();
+
+    let usersData = {}; // 닉네임 정보 캐싱용
+    let currentChatUid = null;
+    let currentListener = null;
+
+    // 1. 유저 데이터(닉네임) 감지
+    database.ref('user_data').on('value', snap => {
+        const data = snap.val();
+        for(let uid in data) {
+            usersData[uid] = data[uid].nickname || "이름없음";
+        }
+        renderUserList();
+    });
+
+    // 2. 전체 문의방 목록 감지
+    let allInquiries = {};
+    database.ref('inquiries').on('value', snap => {
+        allInquiries = snap.val() || {};
+        renderUserList();
+    });
+
+    function renderUserList() {
+        const listDiv = document.getElementById('userList');
+        listDiv.innerHTML = '';
+        
+        for(let uid in allInquiries) {
+            const msgsObj = allInquiries[uid];
+            const msgsArr = Object.values(msgsObj);
+            const lastMsg = msgsArr[msgsArr.length - 1]; // 최근 메시지 추출
+            const nickname = usersData[uid] || "알 수 없는 사용자";
+
+            const item = document.createElement('div');
+            item.className = `user-item ${currentChatUid === uid ? 'active' : ''}`;
+            item.onclick = () => openChat(uid, nickname);
+            
+            item.innerHTML = `
+                <div class="user-name">${nickname}</div>
+                <div class="user-preview">${lastMsg ? lastMsg.text : '대화 내용 없음'}</div>
+            `;
+            listDiv.appendChild(item);
+        }
+    }
+
+    function openChat(uid, nickname) {
+        currentChatUid = uid;
+        renderUserList(); 
+        
+        document.getElementById('roomEmpty').style.display = 'none';
+        document.getElementById('roomActive').style.display = 'flex';
+        document.getElementById('roomTitle').innerText = `${nickname} 님과의 대화`;
+        
+        const msgDiv = document.getElementById('roomMessages');
+        msgDiv.innerHTML = '';
+
+        if(currentListener) database.ref('inquiries/' + currentListener).off();
+        currentListener = uid;
+
+        // 선택한 유저와의 채팅 내용 불러오기
+        database.ref('inquiries/' + uid).on('child_added', snap => {
+            const msg = snap.val();
+            // 관리자는 'admin', 학생은 'user'
+            const roleClass = msg.role === 'admin' ? 'msg-admin' : 'msg-user';
+            
+            msgDiv.innerHTML += `<div class="msg-bubble ${roleClass}">${msg.text.replace(/\n/g, '<br>')}</div>`;
+            msgDiv.scrollTop = msgDiv.scrollHeight;
+        });
+    }
+
+    function sendReply() {
+        if(!currentChatUid) return;
+        const input = document.getElementById('adminInput');
+        const text = input.value.trim();
+        if(!text) return;
+        
+        // 데이터베이스에 내 답변 저장
+        database.ref('inquiries/' + currentChatUid).push({
+            role: 'admin',
+            text: text,
+            timestamp: firebase.database.ServerValue.TIMESTAMP
+        });
+        
+        input.value = '';
+    }
+
+    document.getElementById('adminInput').addEventListener('keydown', function(e) {
+        if(e.key === 'Enter') { e.preventDefault(); sendReply(); }
+    });
+
+</script>
+</body>
+</html>
